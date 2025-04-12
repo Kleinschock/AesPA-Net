@@ -17,14 +17,6 @@ dist/
 *.whl
 *.tar.gz
 
-# Model Checkpoints and Trained Models
-*.pth
-*.ckpt
-*.t7
-*.h5
-*.onnx
-*.pb
-
 scripts/unet_0901-001.ckpt
 
 
