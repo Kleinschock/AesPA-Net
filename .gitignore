@@ -1,0 +1,56 @@
+# IDE and Editor specific files
+.idea/
+*.swp
+*~
+# Add other editor specific files if needed (e.g., .vscode/)
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.whl
+*.tar.gz
+
+# Model Checkpoints and Trained Models
+*.pth
+*.ckpt
+*.t7
+*.h5
+*.onnx
+*.pb
+
+scripts/unet_0901-001.ckpt
+
+
+# Directories containing generated models, checkpoints, logs, and results
+# logs/ # Uncomment or add if you create a separate logs directory
+
+# Large data files (if not tracked, add specific patterns)
+# data/*.csv
+# data/*.zip
+# data/*.jpg # Be careful if you want to track example images in data/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Virtual environment folders (uncomment the ones you use)
+# venv/
+# .venv/
+# env/
+# .env/
+# env.bak/
+# venv.bak/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# Secrets or sensitive configuration (if any)
+# *.env
+# config.yaml

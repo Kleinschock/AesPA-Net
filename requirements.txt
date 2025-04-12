@@ -1,0 +1,30 @@
+# AesPA-Net Requirements
+
+# IMPORTANT: Install PyTorch + CUDA **FIRST** using Conda before running `pip install -r requirements.txt`.
+# Conda handles the complex GPU dependencies better than pip.
+# Choose a PyTorch version compatible with your GPU drivers.
+# Example Conda command for PyTorch 2.0.1 with CUDA 11.8 (compatible with many recent drivers):
+# (Activate your conda environment first)
+# conda install pytorch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 pytorch-cuda=11.8 -c pytorch -c nvidia
+
+# --- Do not uncomment the lines below ---
+# torch
+# torchvision
+# torchaudio
+# --- PyTorch should be installed via Conda as shown above ---
+
+# Dependencies to be installed by pip AFTER PyTorch is installed via Conda:
+
+# Unpinned versions - let pip find compatible versions for Python 3.10+ and PyTorch 2.x+
+numpy
+Pillow
+imageio
+scipy
+
+# Other dependencies
+matplotlib
+scikit-video  # Note: May require separate ffmpeg installation depending on your OS
+wandb
+torchfile
+opencv-python
+natsort
