@@ -315,79 +315,90 @@ class AdaptiveMultiAttn_Transformer_v2(nn.Module):
 
 
 class VGGEncoder(nn.Module):
-	def __init__(self, vgg):
+	def __init__(self, vgg_state_dict): # <--- Changed parameter name
+
 		super(VGGEncoder, self).__init__()
 
 		self.pad = nn.ReflectionPad2d(1)
 		self.relu = nn.ReLU(inplace=True)
 		self.pool = nn.AvgPool2d(2)
-		self.maxpool1 = nn.MaxPool2d(kernel_size=2, stride=2, return_indices = False)
-		self.maxpool2 = nn.MaxPool2d(kernel_size=2, stride=2, return_indices = False)
-		self.maxpool3 = nn.MaxPool2d(kernel_size=2, stride=2, return_indices = False)
-		self.maxpool4 = nn.MaxPool2d(kernel_size=2, stride=2, return_indices = False)
+		self.maxpool1 = nn.MaxPool2d(kernel_size=2, stride=2, return_indices=False)
+		self.maxpool2 = nn.MaxPool2d(kernel_size=2, stride=2, return_indices=False)
+		self.maxpool3 = nn.MaxPool2d(kernel_size=2, stride=2, return_indices=False)
+		self.maxpool4 = nn.MaxPool2d(kernel_size=2, stride=2, return_indices=False)
+
+		# Helper function to create parameters, assuming FloatTensor is not strictly needed
+		# as loaded tensors should already be floats.
+		def get_param(key):
+			# Check if key exists, handle potential missing keys if necessary
+			if key not in vgg_state_dict:
+				raise KeyError(f"Key '{key}' not found in the loaded VGG state_dict.")
+			# Directly use the tensor from the state_dict
+			return nn.Parameter(vgg_state_dict[key])
 
 		###Level0###
 		self.conv0 = nn.Conv2d(3, 3, 1, 1, 0)
-		self.conv0.weight = nn.Parameter(torch.FloatTensor(vgg.modules[0].weight))
-		self.conv0.bias = nn.Parameter(torch.FloatTensor(vgg.modules[0].bias))
+		# Use keys likely present in the state_dict
+		self.conv0.weight = get_param('0.weight')  # Use key '0.weight'
+		self.conv0.bias = get_param('0.bias')  # Use key '0.bias'
 
 		###Level1###
 		self.conv1_1 = nn.Conv2d(3, 64, 3, 1, 0)
-		self.conv1_1.weight = nn.Parameter(torch.FloatTensor(vgg.modules[2].weight))
-		self.conv1_1.bias = nn.Parameter(torch.FloatTensor(vgg.modules[2].bias))
-		
+		self.conv1_1.weight = get_param('2.weight')  # Use key '2.weight'
+		self.conv1_1.bias = get_param('2.bias')  # Use key '2.bias'
+
 		self.conv1_2 = nn.Conv2d(64, 64, 3, 1, 0)
-		self.conv1_2.weight = nn.Parameter(torch.FloatTensor(vgg.modules[5].weight))
-		self.conv1_2.bias = nn.Parameter(torch.FloatTensor(vgg.modules[5].bias))
-		
+		self.conv1_2.weight = get_param('5.weight')  # Use key '5.weight'
+		self.conv1_2.bias = get_param('5.bias')  # Use key '5.bias'
+
 		###Level2###
 		self.conv2_1 = nn.Conv2d(64, 128, 3, 1, 0)
-		self.conv2_1.weight = nn.Parameter(torch.FloatTensor(vgg.modules[9].weight))
-		self.conv2_1.bias = nn.Parameter(torch.FloatTensor(vgg.modules[9].bias))
-		
+		self.conv2_1.weight = get_param('9.weight')  # Use key '9.weight'
+		self.conv2_1.bias = get_param('9.bias')  # Use key '9.bias'
+
 		self.conv2_2 = nn.Conv2d(128, 128, 3, 1, 0)
-		self.conv2_2.weight = nn.Parameter(torch.FloatTensor(vgg.modules[12].weight))
-		self.conv2_2.bias = nn.Parameter(torch.FloatTensor(vgg.modules[12].bias))
-		
+		self.conv2_2.weight = get_param('12.weight')  # Use key '12.weight'
+		self.conv2_2.bias = get_param('12.bias')  # Use key '12.bias'
+
 		###Level3###
 		self.conv3_1 = nn.Conv2d(128, 256, 3, 1, 0)
-		self.conv3_1.weight = nn.Parameter(torch.FloatTensor(vgg.modules[16].weight))
-		self.conv3_1.bias = nn.Parameter(torch.FloatTensor(vgg.modules[16].bias))
+		self.conv3_1.weight = get_param('16.weight')  # Use key '16.weight'
+		self.conv3_1.bias = get_param('16.bias')  # Use key '16.bias'
 
 		self.conv3_2 = nn.Conv2d(256, 256, 3, 1, 0)
-		self.conv3_2.weight = nn.Parameter(torch.FloatTensor(vgg.modules[19].weight))
-		self.conv3_2.bias = nn.Parameter(torch.FloatTensor(vgg.modules[19].bias))
+		self.conv3_2.weight = get_param('19.weight')  # Use key '19.weight'
+		self.conv3_2.bias = get_param('19.bias')  # Use key '19.bias'
 
 		self.conv3_3 = nn.Conv2d(256, 256, 3, 1, 0)
-		self.conv3_3.weight = nn.Parameter(torch.FloatTensor(vgg.modules[22].weight))
-		self.conv3_3.bias = nn.Parameter(torch.FloatTensor(vgg.modules[22].bias))
+		self.conv3_3.weight = get_param('22.weight')  # Use key '22.weight'
+		self.conv3_3.bias = get_param('22.bias')  # Use key '22.bias'
 
 		self.conv3_4 = nn.Conv2d(256, 256, 3, 1, 0)
-		self.conv3_4.weight = nn.Parameter(torch.FloatTensor(vgg.modules[25].weight))
-		self.conv3_4.bias = nn.Parameter(torch.FloatTensor(vgg.modules[25].bias))
+		self.conv3_4.weight = get_param('25.weight')  # Use key '25.weight'
+		self.conv3_4.bias = get_param('25.bias')  # Use key '25.bias'
 
-		
 		###Level4###
 		self.conv4_1 = nn.Conv2d(256, 512, 3, 1, 0)
-		self.conv4_1.weight = nn.Parameter(torch.FloatTensor(vgg.modules[29].weight))
-		self.conv4_1.bias = nn.Parameter(torch.FloatTensor(vgg.modules[29].bias))
+		self.conv4_1.weight = get_param('29.weight')  # Use key '29.weight'
+		self.conv4_1.bias = get_param('29.bias')  # Use key '29.bias'
 
 		self.conv4_2 = nn.Conv2d(512, 512, 3, 1, 0)
-		self.conv4_2.weight = nn.Parameter(torch.FloatTensor(vgg.modules[32].weight))
-		self.conv4_2.bias = nn.Parameter(torch.FloatTensor(vgg.modules[32].bias))
+		self.conv4_2.weight = get_param('32.weight')  # Use key '32.weight'
+		self.conv4_2.bias = get_param('32.bias')  # Use key '32.bias'
 
 		self.conv4_3 = nn.Conv2d(512, 512, 3, 1, 0)
-		self.conv4_3.weight = nn.Parameter(torch.FloatTensor(vgg.modules[35].weight))
-		self.conv4_3.bias = nn.Parameter(torch.FloatTensor(vgg.modules[35].bias))
+		self.conv4_3.weight = get_param('35.weight')  # Use key '35.weight'
+		self.conv4_3.bias = get_param('35.bias')  # Use key '35.bias'
 
 		self.conv4_4 = nn.Conv2d(512, 512, 3, 1, 0)
-		self.conv4_4.weight = nn.Parameter(torch.FloatTensor(vgg.modules[38].weight))
-		self.conv4_4.bias = nn.Parameter(torch.FloatTensor(vgg.modules[38].bias))
+		self.conv4_4.weight = get_param('38.weight')  # Use key '38.weight'
+		self.conv4_4.bias = get_param('38.bias')  # Use key '38.bias'
 
 		###Level5###
 		self.conv5_1 = nn.Conv2d(512, 512, 3, 1, 0)
-		self.conv5_1.weight = nn.Parameter(torch.FloatTensor(vgg.modules[42].weight))
-		self.conv5_1.bias = nn.Parameter(torch.FloatTensor(vgg.modules[42].bias))
+		self.conv5_1.weight = get_param('42.weight')  # Use key '42.weight'
+		self.conv5_1.bias = get_param('42.bias')  # Use key '42.bias'
+
 
 	def forward(self, x):
 		skips = {}
