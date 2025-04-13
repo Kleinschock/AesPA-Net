@@ -17,6 +17,9 @@ from data.dataset_util import *
 from hist_loss import RGBuvHistBlock
 import wandb
 
+# Add this function inside the Baseline class in baseline.py
+
+
 
 def calc_histogram_loss(A, B, histogram_block):
     input_hist = histogram_block(A)
@@ -139,6 +142,127 @@ class Baseline(object):
 
         self.result_st_dir = os.path.join(self.train_result_dir, self.comment, 'log')
         os.makedirs(self.result_st_dir, exist_ok=True)
+
+    def setup_for_inference(self, device):
+        """Loads models and prepares them for inference on a specific device."""
+        # Load VGG weights (ensure path is correct)
+        try:
+            vgg_weights_path = './baseline_checkpoints/vgg_normalised_conv5_1.pth'
+            print(f"Loading VGG weights from: {vgg_weights_path}")
+            # Load weights to CPU first to avoid potential CUDA init issues
+            pretrained_vgg = torch.load(vgg_weights_path, map_location='cpu')
+            print("VGG weights loaded successfully.")
+        except Exception as e:
+            print(f"Error loading pretrained VGG from {vgg_weights_path}: {e}")
+            raise
+
+        # Initialize network and discriminator
+        print("Initializing Baseline_net...")
+        self.network = Baseline_net(pretrained_vgg=pretrained_vgg)
+        # self.discriminator = MultiScaleImageDiscriminator() # Discriminator not needed for inference
+
+        # Load decoder and transformer weights (ensure paths are correct relative to app.py)
+        # Use self.result_st_dir which should be set based on args or defaults
+        decoder_path = os.path.join(self.result_st_dir, 'dec_model.pth')  # Adjusted name if needed
+        transformer_path = os.path.join(self.result_st_dir, 'transformer_model.pth')  # Adjusted name if needed
+
+        try:
+            print(f"Loading Decoder weights from: {decoder_path}")
+            dec_state_dict = torch.load(decoder_path, map_location='cpu')['state_dict']
+            self.network.decoder.load_state_dict(dec_state_dict)
+            print("Decoder weights loaded successfully.")
+        except Exception as e:
+            print(f"Error loading Decoder weights from {decoder_path}: {e}")
+            # Fallback or default path if needed
+            alt_decoder_path = './train_results/aepapa_run1/log/dec_model.pth'
+            try:
+                print(f"Trying alternative Decoder path: {alt_decoder_path}")
+                dec_state_dict = torch.load(alt_decoder_path, map_location='cpu')['state_dict']
+                self.network.decoder.load_state_dict(dec_state_dict)
+                print("Alternative Decoder weights loaded successfully.")
+            except Exception as alt_e:
+                print(f"Error loading alternative Decoder weights from {alt_decoder_path}: {alt_e}")
+                raise  # Re-raise if both fail
+
+        try:
+            print(f"Loading Transformer weights from: {transformer_path}")
+            trans_state_dict = torch.load(transformer_path, map_location='cpu')['state_dict']
+            self.network.transformer.load_state_dict(trans_state_dict)
+            print("Transformer weights loaded successfully.")
+        except Exception as e:
+            print(f"Error loading Transformer weights from {transformer_path}: {e}")
+            # Fallback or default path if needed
+            alt_transformer_path = './train_results/aepapa_run1/log/transformer_model.pth'
+            try:
+                print(f"Trying alternative Transformer path: {alt_transformer_path}")
+                trans_state_dict = torch.load(alt_transformer_path, map_location='cpu')['state_dict']
+                self.network.transformer.load_state_dict(trans_state_dict)
+                print("Alternative Transformer weights loaded successfully.")
+            except Exception as alt_e:
+                print(f"Error loading alternative Transformer weights from {alt_transformer_path}: {alt_e}")
+                raise  # Re-raise if both fail
+
+        # Move network to the target device
+        self.network.to(device)
+        self.network.eval()  # Set to evaluation mode
+        # Make encoder params non-trainable (already done in __init__, but good to ensure)
+        for param in self.network.encoder.parameters():
+            param.requires_grad = False
+        print(f"Network moved to {device} and set to eval mode.")
+
+    def run_single_stylization(self, content_tensor, style_tensor, device):
+        """
+        Performs stylization on a single content/style tensor pair.
+
+        Args:
+            content_tensor (torch.Tensor): Content image tensor (B, C, H, W), normalized.
+            style_tensor (torch.Tensor): Style image tensor (B, C, H, W), normalized.
+            device (torch.device): The device to run inference on.
+
+        Returns:
+            torch.Tensor: Stylized image tensor (B, C, H, W), normalized.
+        """
+        if self.network is None:
+            raise RuntimeError("Network not initialized. Call setup_for_inference first.")
+
+        with torch.no_grad():
+            # Ensure tensors are on the correct device
+            content_tensor = content_tensor.to(device)
+            style_tensor = style_tensor.to(device)
+
+            # Preprocess: Apply size_arrange and create grayscale versions
+            content_input = size_arrange(content_tensor)
+            style_input = size_arrange(style_tensor)
+            gray_content = self.invert_gray(content_input)
+            gray_style = self.invert_gray(style_input)
+
+            # Calculate adaptive alpha
+            # Ensure adaptive_gram_weight uses the correct device
+            style_adaptive_alpha = (((self.adaptive_gram_weight(style_input, 1, 8) +
+                                      self.adaptive_gram_weight(style_input, 2, 8) +
+                                      self.adaptive_gram_weight(style_input, 3, 8)) / 3).unsqueeze(1).to(device) + \
+                                    ((self.adaptive_gram_weight(gray_style, 1, 8) +
+                                      self.adaptive_gram_weight(gray_style, 2, 8) +
+                                      self.adaptive_gram_weight(gray_style, 3, 8)) / 3).unsqueeze(1).to(device)
+                                    ) / 2
+
+            # Run the forward pass
+            stylized_tensor, _, _, _, _ = self.network(
+                content_input,
+                style_input,
+                style_adaptive_alpha,
+                gray_content,
+                style_input  # Original paper uses 'style' here, let's stick to that. Check if gray_style is intended.
+                # gray_style # <-- Alternative if gray_style was intended for the last argument
+            )
+
+            # Resize stylized output back to original content tensor's input size *before* size_arrange
+            # This helps stitching if size_arrange changed dimensions.
+            original_h, original_w = content_tensor.shape[2:]
+            stylized_tensor = F.interpolate(stylized_tensor, size=(original_h, original_w), mode='bilinear',
+                                            align_corners=False)
+
+        return stylized_tensor
 
     def invert_gray(self, input):
         return torchvision.transforms.functional.rgb_to_grayscale(input).repeat(1, 3, 1, 1)

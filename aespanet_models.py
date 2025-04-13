@@ -305,25 +305,14 @@ class AdaptiveMultiAttn_Transformer_v2(nn.Module):
 		self.merge_conv_pad = nn.ReflectionPad2d((1, 1, 1, 1))
 		self.merge_conv = nn.Conv2d(out_planes, out_planes, (3, 3))
 
-	def forward(self, content4_1, style4_1, content5_1, style5_1, content4_1_key, style4_1_key, content5_1_key, style5_1_key, blend_weight=0.5, seed=None): # <--- Added blend_weight parameter with default
+	def forward(self, content4_1, style4_1, content5_1, style5_1, content4_1_key, style4_1_key, content5_1_key, style5_1_key, seed=None):
 		feature_4_1, attn_4_1 = self.attn_adain_4_1(content4_1, style4_1, content4_1_key, style4_1_key, seed=seed)
 		feature_5_1, attn_5_1 = self.attn_adain_5_1(content5_1, style5_1, content5_1_key, style5_1_key, seed=seed)
+		#stylized_results = self.merge_conv(self.merge_conv_pad(feature_4_1 +  self.upsample5_1(feature_5_1)))
+		
+		stylized_results = self.merge_conv(self.merge_conv_pad(feature_4_1 +  nn.functional.interpolate(feature_5_1, size=(feature_4_1.size(2), feature_4_1.size(3) ) ) ) )
+		return stylized_results, feature_4_1, feature_5_1, attn_4_1, attn_5_1
 
-		# --- Start Modification ---
-		# Interpolate the deeper feature (conv5_1) to match the size of the shallower one (conv4_1)
-		interpolated_feature_5_1 = nn.functional.interpolate(feature_5_1, size=(feature_4_1.size(2), feature_4_1.size(3)))
-
-		# Apply the blend weight for mixing
-		# blend_weight=0.0 means only use feature_4_1
-		# blend_weight=1.0 means only use interpolated_feature_5_1
-		# blend_weight=0.5 means equal mix
-		merged_feature = (1.0 - blend_weight) * feature_4_1 + blend_weight * interpolated_feature_5_1
-
-		# Apply the final merge convolution
-		stylized_results = self.merge_conv(self.merge_conv_pad(merged_feature))
-		# --- End Modification ---
-
-		return stylized_results, feature_4_1, feature_5_1, attn_4_1, attn_5_1 # Return values are unchanged
 
 class VGGEncoder(nn.Module):
 	def __init__(self, vgg_state_dict): # <--- Changed parameter name
@@ -539,69 +528,61 @@ class VGGEncoder(nn.Module):
 class VGGDecoder(nn.Module):
 	def __init__(self):
 		super(VGGDecoder, self).__init__()
+		
+		self.pad = nn.ReflectionPad2d(1)
+		self.relu = nn.ReLU(inplace=False)
+		self.adain = AdaIN()
+		self.styledecorator = StyleDecorator()
 
-		# Using ReplicationPad2d is generally preferred for style transfer
-		# to avoid border artifacts introduced by zero padding.
-		self.pad = nn.ReplicationPad2d(1)
-		self.relu = nn.ReLU(inplace=False) # inplace=False recommended if using hooks/debugging
-
-		# Define layers (ensure channel dimensions match VGG structure)
-		# Level 4 -> 3
-		self.conv4_1 = nn.Conv2d(512, 256, 3, 1, 0) # Input from transformer (512), output 256 for level 3
+		#self.conv5_1 = nn.Conv2d(512, 512, 3, 1, 0)
+		#self.conv4_4 = nn.Conv2d(512, 512, 3, 1, 0)
+		#self.conv4_3 = nn.Conv2d(512, 512, 3, 1, 0)
+		#self.conv4_2 = nn.Conv2d(512, 512, 3, 1, 0)
+		self.conv4_1 = nn.Conv2d(512, 256, 3, 1, 0)
 		self.conv3_4 = nn.Conv2d(256, 256, 3, 1, 0)
 		self.conv3_3 = nn.Conv2d(256, 256, 3, 1, 0)
 		self.conv3_2 = nn.Conv2d(256, 256, 3, 1, 0)
-		self.conv3_1 = nn.Conv2d(256, 128, 3, 1, 0) # Output 128 for level 2
-
-		# Level 3 -> 2
+		self.conv3_1 = nn.Conv2d(256, 128, 3, 1, 0)
 		self.conv2_2 = nn.Conv2d(128, 128, 3, 1, 0)
-		self.conv2_1 = nn.Conv2d(128, 64, 3, 1, 0)  # Output 64 for level 1
-
-		# Level 2 -> 1
+		self.conv2_1 = nn.Conv2d(128, 64, 3, 1, 0)
 		self.conv1_2 = nn.Conv2d(64, 64, 3, 1, 0)
-		self.conv1_1 = nn.Conv2d(64, 3, 3, 1, 0)   # Final output (3 channels)
+		self.conv1_1 = nn.Conv2d(64, 3, 3, 1, 0)
+
+
+		init_weights(self)
 		
 	def forward(self, x, skips):
 		x = self.decode(x, skips)
+		
 
-	def decode(self, stylized_feat, content_skips):  # Removed style_skips as they aren't used in this decoder logic
-		print(
-			f"[DEBUG VGGDecoder.decode] Input stylized_feat shape: {stylized_feat.shape}, dtype: {stylized_feat.dtype}")
+	def decode(self, stylized_feat, content_skips, style_skips):		
+		out = self.relu(self.conv4_1(self.pad(stylized_feat)))
+		resize_w, resize_h = content_skips['conv3_4'].size(2), content_skips['conv3_4'].size(3)
+		unpooled_feat = F.interpolate(out, size=[resize_w, resize_h], mode='nearest')	
+		out = unpooled_feat
 
-		# Level 4 -> 3 Processing
-		out = self.relu(self.conv4_1(self.pad(stylized_feat)))  # In: 512, Out: 256
-		print(f"[DEBUG VGGDecoder.decode] After conv4_1: {out.shape}")
-		target_skip_3 = content_skips['conv3_4']  # Or use conv3_1, consistency matters
-		print(f"[DEBUG VGGDecoder.decode] Target skip size (conv3_4): {target_skip_3.shape[2:]}")
-		out = F.interpolate(out, size=target_skip_3.shape[2:], mode='nearest')  # Upsample to level 3 size
-		print(f"[DEBUG VGGDecoder.decode] After interpolate (to L3): {out.shape}")
-		out = self.relu(self.conv3_4(self.pad(out)))  # In: 256, Out: 256
-		out = self.relu(self.conv3_3(self.pad(out)))  # In: 256, Out: 256
-		out = self.relu(self.conv3_2(self.pad(out)))  # In: 256, Out: 256
-		# Optional: feature_wct_simple(out, style_skips['conv3_1']) could be added here
-		out = self.relu(self.conv3_1(self.pad(out)))  # In: 256, Out: 128 (Ready for level 2)
-		print(f"[DEBUG VGGDecoder.decode] After conv3_1: {out.shape}")
+		##여기에 skip_conneciton 넣어서 stylization boost 하기 (local pattern)
+		out = self.relu(self.conv3_4(self.pad(out)))
+		out = self.relu(self.conv3_3(self.pad(out)))
+		out =  self.relu(self.conv3_2(self.pad(out)))
+		#out = feature_wct_simple(out, style_skips['conv3_1'])
 
-		# Level 3 -> 2 Processing
-		target_skip_2 = content_skips['conv2_2']  # Or use conv2_1
-		print(f"[DEBUG VGGDecoder.decode] Target skip size (conv2_2): {target_skip_2.shape[2:]}")
-		out = F.interpolate(out, size=target_skip_2.shape[2:], mode='nearest')  # Upsample to level 2 size
-		print(f"[DEBUG VGGDecoder.decode] After interpolate (to L2): {out.shape}")
-		out = self.relu(self.conv2_2(self.pad(out)))  # In: 128, Out: 128
-		# Optional: feature_wct_simple(out, style_skips['conv2_1'])
-		out = self.relu(self.conv2_1(self.pad(out)))  # In: 128, Out: 64 (Ready for level 1)
-		print(f"[DEBUG VGGDecoder.decode] After conv2_1: {out.shape}")
+		out = self.relu(self.conv3_1(self.pad(out)))
+		resize_w, resize_h = content_skips['conv2_2'].size(2), content_skips['conv2_2'].size(3)
+		unpooled_feat = F.interpolate(out, size=[resize_w, resize_h], mode='nearest')
+		out = unpooled_feat
+		
+		out = self.relu(self.conv2_2(self.pad(out)))
+		#out = feature_wct_simple(out, style_skips['conv2_1'])
 
-		# Level 2 -> 1 Processing
-		target_skip_1 = content_skips['conv1_2']  # Or use conv1_1
-		print(f"[DEBUG VGGDecoder.decode] Target skip size (conv1_2): {target_skip_1.shape[2:]}")
-		out = F.interpolate(out, size=target_skip_1.shape[2:], mode='nearest')  # Upsample to level 1 size
-		print(f"[DEBUG VGGDecoder.decode] After interpolate (to L1): {out.shape}")
-		out = self.relu(self.conv1_2(self.pad(out)))  # In: 64, Out: 64
-		# Optional: feature_wct_simple(out, style_skips['conv1_1'])
-		out = self.conv1_1(self.pad(out))  # In: 64, Out: 3 (Final Image)
-		print(f"[DEBUG VGGDecoder.decode] Final output shape: {out.shape}")
+		out = self.relu(self.conv2_1(self.pad(out)))
+		resize_w, resize_h = content_skips['conv1_2'].size(2), content_skips['conv1_2'].size(3)
+		unpooled_feat = F.interpolate(out, size=[resize_w, resize_h], mode='nearest')
+		out = unpooled_feat
 
+		out = self.relu(self.conv1_2(self.pad(out)))
+		#out = feature_wct_simple(out, style_skips['conv1_1'])
+		out = self.conv1_1(self.pad(out))
 		return out
 
 	def reconstruct(self, x):
@@ -676,85 +657,63 @@ class Baseline_net(nn.Module):
 	def encode(self, x, skips):
 		return self.encoder.encode(x, skips)
 
-	# In aespanet_models.py -> Baseline_net class
 	def decode(self, stylized_feat, content_skips, style_skips):
-		# Pass only content_skips if style_skips aren't needed by the decoder logic
-		return self.decoder.decode(stylized_feat, content_skips)
+		return self.decoder.decode(stylized_feat, content_skips, style_skips)
 
-	def forward(self, content, style, adaptive_alpha, gray_content=None, gray_style=None, blend_weight=0.5): # <--- Added blend_weight parameter
-
-		print(f"[DEBUG Baseline_net.forward] Input content shape: {content.shape}, style shape: {style.shape}") # <-- ADDED DEBUG
+	def forward(self, content, style, adaptive_alpha, gray_content=None, gray_style=None):		
+		
 		content_ = size_arrange(content)
 		style_ = size_arrange(style)
-		print(f"[DEBUG Baseline_net.forward] Arranged content shape: {content_.shape}, style shape: {style_.shape}") # <-- ADDED DEBUG
 
 		####Input####
 		content_feat, content_skips = content_, {}
 		style_feat, style_skips = style_, {}
-
+		
 		####Encode####
-		print("[DEBUG Baseline_net.forward] Encoding content...") # <-- ADDED DEBUG
 		content_feat = self.encode(content_feat, content_skips)
-		print(f"[DEBUG Baseline_net.forward] Encoded content_feat shape: {content_feat.shape}") # <-- ADDED DEBUG
-		# Print shapes of a few skips for confirmation
-		if 'conv4_1' in content_skips: print(f"[DEBUG Baseline_net.forward] Content skip conv4_1 shape: {content_skips['conv4_1'].shape}")
-		if 'conv5_1' in content_skips: print(f"[DEBUG Baseline_net.forward] Content skip conv5_1 shape: {content_skips['conv5_1'].shape}")
-
-
-		print("[DEBUG Baseline_net.forward] Encoding style...") # <-- ADDED DEBUG
 		style_feat = self.encode(style_feat, style_skips)
-		print(f"[DEBUG Baseline_net.forward] Encoded style_feat shape: {style_feat.shape}") # <-- ADDED DEBUG
-		if 'conv4_1' in style_skips: print(f"[DEBUG Baseline_net.forward] Style skip conv4_1 shape: {style_skips['conv4_1'].shape}")
-		if 'conv5_1' in style_skips: print(f"[DEBUG Baseline_net.forward] Style skip conv5_1 shape: {style_skips['conv5_1'].shape}")
-
-
+		
 		if gray_content is not None:
 			gray_content_ = size_arrange(gray_content)
 			gray_content_feat, gray_content_skips = gray_content_, {}
-			print("[DEBUG Baseline_net.forward] Encoding gray content...") # <-- ADDED DEBUG
 			gray_content_feat = self.encode(gray_content_feat, gray_content_skips)
-			print(f"[DEBUG Baseline_net.forward] Encoded gray_content_feat shape: {gray_content_feat.shape}") # <-- ADDED DEBUG
 		if gray_style is not None:
 			gray_style_ = size_arrange(gray_style)
 			gray_style_feat, gray_style_skips = gray_style_, {}
-			print("[DEBUG Baseline_net.forward] Encoding gray style...") # <-- ADDED DEBUG
 			gray_style_feat = self.encode(gray_style_feat, gray_style_skips)
-			print(f"[DEBUG Baseline_net.forward] Encoded gray_style_feat shape: {gray_style_feat.shape}") # <-- ADDED DEBUG
 
 
 		####Style transfer####
-		print("[DEBUG Baseline_net.forward] Performing style transfer (Transformer)...") # <-- ADDED DEBUG
-		####Style transfer####
-		print(
-			f"[DEBUG Baseline_net.forward] Performing style transfer (Transformer) with blend_weight={blend_weight}...")  # <-- Updated DEBUG
-		local_transformed_feature, attn_style_4_1, attn_style_5_1, attn_map_4_1, attn_map_5_1 = self.transformer(
-			content_skips['conv4_1'], style_skips['conv4_1'], content_skips['conv5_1'], style_skips['conv5_1'],
-			self.adaptive_get_keys(content_skips, 4, 4, target_feat=content_skips['conv4_1']),
-			self.adaptive_get_keys(style_skips, 1, 4, target_feat=style_skips['conv4_1']),
-			self.adaptive_get_keys(content_skips, 5, 5, target_feat=content_skips['conv5_1']),
-			self.adaptive_get_keys(style_skips, 1, 5, target_feat=style_skips['conv5_1']),
-			blend_weight=blend_weight  # <--- Pass the blend_weight argument here
-			# Note: The original call didn't include 'seed', so we don't add it unless needed elsewhere.
-		)
+		#transformed_feature = self.transformer(content_skips['conv4_1'], style_skips['conv4_1'], content_skips['conv5_1'], style_skips['conv5_1'])
 
-		print("[DEBUG Baseline_net.forward] Performing style transfer (Global WCT)...") # <-- ADDED DEBUG
+		#Test_Multi_style_level_1
+		local_transformed_feature, attn_style_4_1, attn_style_5_1, attn_map_4_1, attn_map_5_1 = self.transformer(content_skips['conv4_1'], style_skips['conv4_1'], content_skips['conv5_1'], style_skips['conv5_1'],
+								self.adaptive_get_keys(content_skips, 4, 4, target_feat=content_skips['conv4_1']),
+								self.adaptive_get_keys(style_skips, 1, 4, target_feat=style_skips['conv4_1']),
+								self.adaptive_get_keys(content_skips, 5, 5, target_feat=content_skips['conv5_1']),
+								self.adaptive_get_keys(style_skips, 1, 5, target_feat=style_skips['conv5_1']))
+		
 		if gray_content is not None:
-			global_transformed_feat = feature_wct_simple(gray_content_skips['conv4_1'], gray_style_skips['conv4_1']) # Ensure gray skips exist
-		else:
+			global_transformed_feat = feature_wct_simple(gray_content_skips['conv4_1'], gray_style_skips['conv4_1'])
+			#global_transformed_feat = self.adain(gray_content_skips['conv4_1'], gray_style_skips['conv4_1'])
+			#global_transformed_feat = self.decorator(gray_content_skips['conv4_1'], gray_style_skips['conv4_1'])
+		else:	
 			global_transformed_feat = feature_wct_simple(content_skips['conv4_1'], style_skips['conv4_1'])
-		print(f"[DEBUG Baseline_net.forward] Global transformed feature shape: {global_transformed_feat.shape}") # <-- ADDED DEBUG
+			#global_transformed_feat = self.adain(content_skips['conv4_1'], style_skips['conv4_1'])
+			#global_transformed_feat = self.decorator(content_skips['conv4_1'], style_skips['conv4_1'])
 
-		# CORRECTED line in Baseline_net.forward
-		transformed_feature = global_transformed_feat * (
-					1 - adaptive_alpha) + adaptive_alpha * local_transformed_feature
-		print(f"[DEBUG Baseline_net.forward] Final combined transformed_feature shape: {transformed_feature.shape}, dtype: {transformed_feature.dtype}") # <-- ADDED DEBUG
+		
+		transformed_feature = global_transformed_feat*(1-adaptive_alpha.unsqueeze(-1).unsqueeze(-1)) + adaptive_alpha.unsqueeze(-1).unsqueeze(-1)*local_transformed_feature
+		#transformed_feature = global_transformed_feat + local_transformed_feature
+		
+		## Ablation study ##
+		#transformed_feature = local_transformed_feature
 
 		####Decode####
-		print("[DEBUG Baseline_net.forward] Decoding transformed feature...") # <-- ADDED DEBUG
 		stylized_image = self.decode(transformed_feature, content_skips, style_skips)
-		print(f"[DEBUG Baseline_net.forward] Decoded stylized_image shape: {stylized_image.shape}") # <-- ADDED DEBUG
-
+		
 		return stylized_image, attn_style_4_1, attn_style_5_1, attn_map_4_1, attn_map_5_1
+
 
 #################################
 #####MultiScaleDiscriminator#####
