@@ -305,14 +305,25 @@ class AdaptiveMultiAttn_Transformer_v2(nn.Module):
 		self.merge_conv_pad = nn.ReflectionPad2d((1, 1, 1, 1))
 		self.merge_conv = nn.Conv2d(out_planes, out_planes, (3, 3))
 
-	def forward(self, content4_1, style4_1, content5_1, style5_1, content4_1_key, style4_1_key, content5_1_key, style5_1_key, seed=None):
+	def forward(self, content4_1, style4_1, content5_1, style5_1, content4_1_key, style4_1_key, content5_1_key, style5_1_key, blend_weight=0.5, seed=None): # <--- Added blend_weight parameter with default
 		feature_4_1, attn_4_1 = self.attn_adain_4_1(content4_1, style4_1, content4_1_key, style4_1_key, seed=seed)
 		feature_5_1, attn_5_1 = self.attn_adain_5_1(content5_1, style5_1, content5_1_key, style5_1_key, seed=seed)
-		#stylized_results = self.merge_conv(self.merge_conv_pad(feature_4_1 +  self.upsample5_1(feature_5_1)))
-		
-		stylized_results = self.merge_conv(self.merge_conv_pad(feature_4_1 +  nn.functional.interpolate(feature_5_1, size=(feature_4_1.size(2), feature_4_1.size(3) ) ) ) )
-		return stylized_results, feature_4_1, feature_5_1, attn_4_1, attn_5_1
 
+		# --- Start Modification ---
+		# Interpolate the deeper feature (conv5_1) to match the size of the shallower one (conv4_1)
+		interpolated_feature_5_1 = nn.functional.interpolate(feature_5_1, size=(feature_4_1.size(2), feature_4_1.size(3)))
+
+		# Apply the blend weight for mixing
+		# blend_weight=0.0 means only use feature_4_1
+		# blend_weight=1.0 means only use interpolated_feature_5_1
+		# blend_weight=0.5 means equal mix
+		merged_feature = (1.0 - blend_weight) * feature_4_1 + blend_weight * interpolated_feature_5_1
+
+		# Apply the final merge convolution
+		stylized_results = self.merge_conv(self.merge_conv_pad(merged_feature))
+		# --- End Modification ---
+
+		return stylized_results, feature_4_1, feature_5_1, attn_4_1, attn_5_1 # Return values are unchanged
 
 class VGGEncoder(nn.Module):
 	def __init__(self, vgg_state_dict): # <--- Changed parameter name
@@ -670,7 +681,7 @@ class Baseline_net(nn.Module):
 		# Pass only content_skips if style_skips aren't needed by the decoder logic
 		return self.decoder.decode(stylized_feat, content_skips)
 
-	def forward(self, content, style, adaptive_alpha, gray_content=None, gray_style=None):
+	def forward(self, content, style, adaptive_alpha, gray_content=None, gray_style=None, blend_weight=0.5): # <--- Added blend_weight parameter
 
 		print(f"[DEBUG Baseline_net.forward] Input content shape: {content.shape}, style shape: {style.shape}") # <-- ADDED DEBUG
 		content_ = size_arrange(content)
@@ -713,12 +724,18 @@ class Baseline_net(nn.Module):
 
 		####Style transfer####
 		print("[DEBUG Baseline_net.forward] Performing style transfer (Transformer)...") # <-- ADDED DEBUG
-		local_transformed_feature, attn_style_4_1, attn_style_5_1, attn_map_4_1, attn_map_5_1 = self.transformer(content_skips['conv4_1'], style_skips['conv4_1'], content_skips['conv5_1'], style_skips['conv5_1'],
-								self.adaptive_get_keys(content_skips, 4, 4, target_feat=content_skips['conv4_1']),
-								self.adaptive_get_keys(style_skips, 1, 4, target_feat=style_skips['conv4_1']),
-								self.adaptive_get_keys(content_skips, 5, 5, target_feat=content_skips['conv5_1']),
-								self.adaptive_get_keys(style_skips, 1, 5, target_feat=style_skips['conv5_1']))
-		print(f"[DEBUG Baseline_net.forward] Local transformed feature shape: {local_transformed_feature.shape}") # <-- ADDED DEBUG
+		####Style transfer####
+		print(
+			f"[DEBUG Baseline_net.forward] Performing style transfer (Transformer) with blend_weight={blend_weight}...")  # <-- Updated DEBUG
+		local_transformed_feature, attn_style_4_1, attn_style_5_1, attn_map_4_1, attn_map_5_1 = self.transformer(
+			content_skips['conv4_1'], style_skips['conv4_1'], content_skips['conv5_1'], style_skips['conv5_1'],
+			self.adaptive_get_keys(content_skips, 4, 4, target_feat=content_skips['conv4_1']),
+			self.adaptive_get_keys(style_skips, 1, 4, target_feat=style_skips['conv4_1']),
+			self.adaptive_get_keys(content_skips, 5, 5, target_feat=content_skips['conv5_1']),
+			self.adaptive_get_keys(style_skips, 1, 5, target_feat=style_skips['conv5_1']),
+			blend_weight=blend_weight  # <--- Pass the blend_weight argument here
+			# Note: The original call didn't include 'seed', so we don't add it unless needed elsewhere.
+		)
 
 		print("[DEBUG Baseline_net.forward] Performing style transfer (Global WCT)...") # <-- ADDED DEBUG
 		if gray_content is not None:
