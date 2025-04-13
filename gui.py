@@ -131,13 +131,12 @@ def run_stylization_batch(content_batch, style_tensor_single, gray_content_batch
     return stylized_batch
 
 
-def stylize_image_step1( # Renamed from stylize_image_wrapper
+def stylize_image_step1(
     content_img_pil,
     style_img_pil,
     tile_size,
     overlap,
     content_upscale_factor,
-    # interpolation_alpha removed from here
     progress=gr.Progress(track_tqdm=True)
     ):
     """
@@ -311,13 +310,23 @@ def stylize_image_step1( # Renamed from stylize_image_wrapper
     # --- NO Final Interpolation here ---
     # The result is the fully stylized image
 
+
+    # Make sure this block is at the end, after stitching is complete
     final_result_np = np.clip(stylized_result_np * 255, 0, 255).astype(np.uint8)
     fully_stylized_img_pil = Image.fromarray(final_result_np)
 
-    print("Step 1: Stylization and stitching complete.")
+    # --- THIS IS THE CRITICAL PART ---
+    success_message = f"Step 1 finished: Stylized image generated ({fully_stylized_img_pil.width}x{fully_stylized_img_pil.height}). Ready for Step 2 blending."
+    print(success_message)  # Optional: for logging
     # Return the *original* content PIL and the *newly generated* fully stylized PIL
-    return content_img_pil, fully_stylized_img_pil
-
+    # Return exactly 5 values in this order to match the 'outputs' list
+    return (
+        content_img_pil,          # 1. For original_content_state (State)
+        fully_stylized_img_pil,   # 2. For stylized_image_state (State)
+        content_img_pil,          # 3. For step2_content_ref (Image display)
+        fully_stylized_img_pil,   # 4. For step1_stylized_ref (Image display)
+        success_message           # 5. For step1_output_status (Markdown text)
+    )
 
 # --- Step 2: Blending Logic ---
 
@@ -478,7 +487,7 @@ with gr.Blocks(css=css, theme=gr.themes.Soft()) as demo:
                 with gr.Accordion("Tiling & Processing Options", open=False):
                      gr.Markdown("Adjust how the image is processed during stylization. Affects quality and VRAM usage.")
                      tile_size_slider = gr.Slider(label="Tile Size", minimum=32, maximum=1024, step=32, value=DEFAULT_TILE_SIZE, info="Size of square tiles processed (pixels).")
-                     overlap_slider = gr.Slider(label="Tile Overlap", minimum=32, maximum=512, step=32, value=DEFAULT_OVERLAP, info="Overlap between tiles (pixels). Must be < Tile Size.")
+                     overlap_slider = gr.Slider(label="Tile Overlap", minimum=4, maximum=512, step=4, value=DEFAULT_OVERLAP, info="Overlap between tiles (pixels). Must be < Tile Size.")
                      content_upscale_slider = gr.Slider(label="Content Tile Upscale Factor", minimum=1.0, maximum=4.0, step=0.1, value=DEFAULT_UPSCALE_FACTOR, info="Upscale content tiles before stylization (1.0 = none).")
 
                 stylize_button = gr.Button("Run Stylization (Step 1)", variant="primary")
