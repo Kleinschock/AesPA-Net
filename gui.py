@@ -334,10 +334,14 @@ def stylize_image_step1(
 def blend_images(content_pil, stylized_pil, blend_alpha, blend_mode):
     """
     Step 2: Blends the content and stylized images based on alpha and mode.
-    Includes various color preservation strategies.
+    Includes various color preservation strategies, including dark area protection.
     """
     if content_pil is None or stylized_pil is None:
         return Image.new('RGB', (200, 200), color='lightgray') # Placeholder
+
+    # Ensure inputs are PIL Images before processing
+    if not isinstance(content_pil, Image.Image): content_pil = Image.new('RGB', (200, 200), color='red')
+    if not isinstance(stylized_pil, Image.Image): stylized_pil = Image.new('RGB', (200, 200), color='red')
 
     # Ensure images are RGB and NumPy arrays [0, 1]
     if content_pil.mode != 'RGB': content_pil = content_pil.convert('RGB')
@@ -345,7 +349,11 @@ def blend_images(content_pil, stylized_pil, blend_alpha, blend_mode):
 
     if content_pil.size != stylized_pil.size:
         print(f"Warning: Content size {content_pil.size} != Stylized size {stylized_pil.size}. Resizing stylized image.")
-        stylized_pil = stylized_pil.resize(content_pil.size, Image.Resampling.LANCZOS)
+        try:
+            stylized_pil = stylized_pil.resize(content_pil.size, Image.Resampling.LANCZOS)
+        except Exception as resize_err:
+             print(f"Error resizing: {resize_err}")
+             return Image.new('RGB', content_pil.size, color='orange')
 
     content_np = np.array(content_pil).astype(np.float32) / 255.0
     stylized_np = np.array(stylized_pil).astype(np.float32) / 255.0
@@ -356,97 +364,133 @@ def blend_images(content_pil, stylized_pil, blend_alpha, blend_mode):
 
     print(f"Blending Mode: {blend_mode}, Alpha: {blend_alpha:.2f}")
 
-    if blend_mode == "Linear":
-        intermediate_result_np = stylized_np # Linear blends directly with stylized
+    # --- Default intermediate result is the stylized image (for Linear mode) ---
+    intermediate_result_np = stylized_np
 
-    elif blend_mode == "Preserve Content Color (LAB - Original)":
-        print("Converting to LAB...")
-        try:
+    # --- Color Preservation Modes ---
+    needs_lab_conversion = any(s in blend_mode for s in ["LAB", "Lum Match", "Dark Protect", "Clip Bright"])
+    needs_hsv_conversion = "HSV" in blend_mode
+    needs_ycbcr_conversion = "YCbCr" in blend_mode
+
+    content_lab, stylized_lab = None, None
+    L_c, A_c, B_c = None, None, None
+    L_s, _, _ = None, None, None
+    L_s_adjusted = None
+
+    try:
+        # --- Pre-calculations for relevant modes ---
+        if needs_lab_conversion:
+            print("Converting to LAB...")
             content_lab = color.rgb2lab(content_np)
             stylized_lab = color.rgb2lab(stylized_np)
-            # Combine L from stylized, A and B from content
-            combined_lab = np.stack(
-                (stylized_lab[:, :, 0], content_lab[:, :, 1], content_lab[:, :, 2]), axis=-1
-            )
-            intermediate_result_np = color.lab2rgb(combined_lab)
-            print("LAB conversion complete.")
-        except Exception as e:
-            print(f"Error during LAB color preservation: {e}. Falling back to Linear.")
-            gr.Warning("Error during LAB processing. Using Linear blend.")
-            intermediate_result_np = stylized_np # Fallback
-
-    elif blend_mode == "Preserve Content Color (LAB + Lum Match)":
-        print("Converting to LAB + Luminance Matching...")
-        try:
-            content_lab = color.rgb2lab(content_np)
-            stylized_lab = color.rgb2lab(stylized_np)
-
-            L_c = content_lab[:, :, 0]
+            L_c, A_c, B_c = content_lab[:, :, 0], content_lab[:, :, 1], content_lab[:, :, 2]
             L_s = stylized_lab[:, :, 0]
-            A_c = content_lab[:, :, 1]
-            B_c = content_lab[:, :, 2]
+            print("LAB conversion complete.")
 
-            # Calculate statistics (add epsilon for stability)
-            mean_c, std_c = L_c.mean(), L_c.std()
-            mean_s, std_s = L_s.mean(), L_s.std()
-            epsilon = 1e-6
+            if "Lum Match" in blend_mode or "Dark Protect" in blend_mode or "Clip Bright" in blend_mode or "Blend L" in blend_mode:
+                 print("Performing Luminance Matching...")
+                 mean_c, std_c = L_c.mean(), L_c.std()
+                 mean_s, std_s = L_s.mean(), L_s.std()
+                 epsilon = 1e-6
+                 L_s_adjusted = (L_s - mean_s) * (std_c / (std_s + epsilon)) + mean_c
+                 L_s_adjusted = np.clip(L_s_adjusted, 0, 100) # Clip to valid L range
+                 print("Luminance Matching complete.")
 
-            # Adjust L_s
-            L_s_adjusted = (L_s - mean_s) * (std_c / (std_s + epsilon)) + mean_c
-            # Clip to valid L range [0, 100]
-            L_s_adjusted = np.clip(L_s_adjusted, 0, 100)
 
-            # Combine adjusted L with content A, B
-            combined_lab = np.stack((L_s_adjusted, A_c, B_c), axis=-1)
-            intermediate_result_np = color.lab2rgb(combined_lab)
-            print("LAB + Lum Match conversion complete.")
-        except Exception as e:
-            print(f"Error during LAB+LumMatch: {e}. Falling back to Linear.")
-            gr.Warning("Error during LAB+LumMatch processing. Using Linear blend.")
-            intermediate_result_np = stylized_np # Fallback
+        # --- Mode Implementations ---
+        if blend_mode == "Linear":
+            pass # Already set intermediate_result_np = stylized_np
 
-    elif blend_mode == "Preserve Content Color (HSV)":
-        print("Converting to HSV...")
-        try:
+        elif blend_mode == "Preserve Content Color (LAB - Original)":
+            if L_s is not None and A_c is not None and B_c is not None:
+                combined_lab = np.stack((L_s, A_c, B_c), axis=-1)
+                intermediate_result_np = color.lab2rgb(combined_lab)
+            else: raise ValueError("LAB components not calculated")
+
+        elif blend_mode == "Preserve Content Color (LAB + Lum Match)":
+            if L_s_adjusted is not None and A_c is not None and B_c is not None:
+                combined_lab = np.stack((L_s_adjusted, A_c, B_c), axis=-1)
+                intermediate_result_np = color.lab2rgb(combined_lab)
+            else: raise ValueError("LAB + Lum Match components not calculated")
+
+        # <<< NEW MODES START >>>
+        elif blend_mode == "LAB + Lum Match + Blend L":
+            if L_c is not None and L_s_adjusted is not None and A_c is not None and B_c is not None:
+                structure_beta = 0.7 # Blend factor for luminance (0=content, 1=style) - could be a slider later
+                L_final = (1 - structure_beta) * L_c + structure_beta * L_s_adjusted
+                L_final = np.clip(L_final, 0, 100) # Ensure valid range
+                combined_lab = np.stack((L_final, A_c, B_c), axis=-1)
+                intermediate_result_np = color.lab2rgb(combined_lab)
+                print(f"Applied L Blend (beta={structure_beta})")
+            else: raise ValueError("LAB + Lum Match + Blend L components not calculated")
+
+        elif blend_mode == "LAB + Lum Match + Dark Protect":
+             if L_c is not None and L_s_adjusted is not None and A_c is not None and B_c is not None:
+                dark_threshold = 40.0 # L value below which protection increases (adjust as needed)
+                # Simple linear mask: 0 in pure black, 1 above threshold
+                mask = np.clip(L_c / dark_threshold, 0, 1)
+                # Alternative smoother mask (e.g., sigmoid):
+                # k = 0.15 # Steepness
+                # mask = 1 / (1 + np.exp(-k * (L_c - dark_threshold)))
+
+                L_final = mask * L_s_adjusted + (1 - mask) * L_c
+                L_final = np.clip(L_final, 0, 100)
+                combined_lab = np.stack((L_final, A_c, B_c), axis=-1)
+                intermediate_result_np = color.lab2rgb(combined_lab)
+                print(f"Applied Dark Protect (threshold={dark_threshold})")
+             else: raise ValueError("LAB + Lum Match + Dark Protect components not calculated")
+
+        elif blend_mode == "LAB + Lum Match + Clip Bright":
+             if L_c is not None and L_s_adjusted is not None and A_c is not None and B_c is not None:
+                 max_brighten_allowance = 30.0 # Max L units a pixel can brighten vs original (adjust as needed)
+                 L_final = np.minimum(L_s_adjusted, L_c + max_brighten_allowance)
+                 L_final = np.clip(L_final, 0, 100)
+                 combined_lab = np.stack((L_final, A_c, B_c), axis=-1)
+                 intermediate_result_np = color.lab2rgb(combined_lab)
+                 print(f"Applied Highlight Clipping (allowance={max_brighten_allowance})")
+             else: raise ValueError("LAB + Lum Match + Clip Bright components not calculated")
+        # <<< NEW MODES END >>>
+
+        elif blend_mode == "Preserve Content Color (HSV)":
+            print("Converting to HSV...")
             content_hsv = color.rgb2hsv(content_np)
             stylized_hsv = color.rgb2hsv(stylized_np)
-            # Combine H, S from content, V from stylized
             combined_hsv = np.stack(
                 (content_hsv[:, :, 0], content_hsv[:, :, 1], stylized_hsv[:, :, 2]), axis=-1
             )
             intermediate_result_np = color.hsv2rgb(combined_hsv)
             print("HSV conversion complete.")
-        except Exception as e:
-            print(f"Error during HSV color preservation: {e}. Falling back to Linear.")
-            gr.Warning("Error during HSV processing. Using Linear blend.")
-            intermediate_result_np = stylized_np # Fallback
 
-    elif blend_mode == "Preserve Content Color (YCbCr)":
-        print("Converting to YCbCr...")
-        try:
-            # skimage expects uint8 for YCbCr, convert back and forth
-            content_ycbcr = color.rgb2ycbcr( (content_np * 255).astype(np.uint8) )
-            stylized_ycbcr = color.rgb2ycbcr( (stylized_np * 255).astype(np.uint8) )
-            # Combine Y from stylized, Cb, Cr from content
-            # Y is channel 0, Cb is 1, Cr is 2
-            combined_ycbcr = np.stack(
-                (stylized_ycbcr[:, :, 0], content_ycbcr[:, :, 1], content_ycbcr[:, :, 2]), axis=-1
-            )
-            # Convert back to RGB float [0, 1]
-            intermediate_result_np = color.ycbcr2rgb(combined_ycbcr).astype(np.float32) / 255.0
-            print("YCbCr conversion complete.")
-        except Exception as e:
-            print(f"Error during YCbCr color preservation: {e}. Falling back to Linear.")
-            gr.Warning("Error during YCbCr processing. Using Linear blend.")
-            intermediate_result_np = stylized_np # Fallback
+        elif blend_mode == "Preserve Content Color (YCbCr)":
+             print("Converting to YCbCr...")
+             content_ycbcr = color.rgb2ycbcr( (content_np * 255).astype(np.uint8) )
+             stylized_ycbcr = color.rgb2ycbcr( (stylized_np * 255).astype(np.uint8) )
+             combined_ycbcr = np.stack(
+                 (stylized_ycbcr[:, :, 0], content_ycbcr[:, :, 1], content_ycbcr[:, :, 2]), axis=-1
+             )
+             intermediate_result_np = color.ycbcr2rgb(combined_ycbcr).astype(np.float32) / 255.0
+             print("YCbCr conversion complete.")
 
-    else:
-        print(f"Unknown blend mode: {blend_mode}. Using Linear.")
-        intermediate_result_np = stylized_np # Default to using stylized if mode unknown
+        else:
+            print(f"Unknown blend mode: {blend_mode}. Using Linear.")
+            # intermediate_result_np already set to stylized_np
+
+    except Exception as e:
+        print(f"Error during blending mode '{blend_mode}': {e}. Falling back to Linear blend.")
+        gr.Warning(f"Error during '{blend_mode}' processing. Using Linear blend.")
+        intermediate_result_np = stylized_np # Fallback to raw stylized on error
+
 
     # --- Final Alpha Blending ---
-    # Blend between original content and the intermediate result
-    # (which is either stylized_np for Linear, or the color-preserved version)
+    # Perform checks before final blending
+    if intermediate_result_np is None or not isinstance(intermediate_result_np, np.ndarray) or intermediate_result_np.shape != content_np.shape:
+         print("Error: Intermediate result is invalid. Using stylized image directly for alpha blend.")
+         gr.Warning("Blending error, intermediate result invalid. Using direct stylized blend.")
+         intermediate_result_np = stylized_np
+
+    # Clip intermediate result just in case color conversions went slightly out of [0,1]
+    intermediate_result_np = np.clip(intermediate_result_np, 0, 1)
+
     output_np = (1.0 - blend_alpha) * content_np + blend_alpha * intermediate_result_np
 
     # Clip and convert back to PIL
@@ -454,6 +498,7 @@ def blend_images(content_pil, stylized_pil, blend_alpha, blend_mode):
     final_output_img_pil = Image.fromarray(final_result_np)
 
     return final_output_img_pil
+
 
 # --- Gradio Interface Definition ---
 css = """
@@ -508,12 +553,19 @@ with gr.Blocks(css=css, theme=gr.themes.Soft()) as demo:
                     choices=[
                         "Linear",
                         "Preserve Content Color (HSV)",
-                        "Preserve Content Color (LAB + Lum Match)",
                         "Preserve Content Color (YCbCr)",
-                        "Preserve Content Color (LAB - Original)", # Keep the original for comparison
+                        "Preserve Content Color (LAB - Original)",
+                        "Preserve Content Color (LAB + Lum Match)",
+                        # --- New Modes ---
+                        "LAB + Lum Match + Blend L",
+                        "LAB + Lum Match + Dark Protect",
+                        "LAB + Lum Match + Clip Bright",
+                        # --- End New Modes ---
                     ],
-                    value="Linear", # Or maybe default to HSV? User preference.
-                    info="How to merge the images. 'Preserve' modes use style structure + content color.")
+                    # Default to a potentially better mode
+                    value="LAB + Lum Match + Dark Protect",
+                    info="How to merge images. LAB/HSV/YCbCr use style structure + content color. (+ options add specific fixes)")
+
 
                 blend_alpha_slider = gr.Slider(
                     label="Blend Strength (Alpha)",
